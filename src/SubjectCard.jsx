@@ -2,17 +2,33 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import AddAssessment from './AddAssessment'
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid
+  BarChart, Bar, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, CartesianGrid, Cell
 } from 'recharts'
 
-export default function SubjectCard({ subject, session }) {
+function getGradeClass(pct) {
+  if (pct >= 75) return 'pass'
+  if (pct >= 50) return 'warn'
+  return 'fail'
+}
+
+function getGradeLetter(pct) {
+  if (pct >= 80) return 'A'
+  if (pct >= 70) return 'B'
+  if (pct >= 60) return 'C'
+  if (pct >= 50) return 'D'
+  return 'F'
+}
+
+const BAR_COLORS = {
+  pass: '#166534',
+  warn: '#92400e',
+  fail: '#991b1b',
+}
+
+export default function SubjectCard({ subject, session, onDeleted }) {
   const [assessments, setAssessments] = useState([])
+  const [collapsed, setCollapsed] = useState(false)
 
   async function fetchAssessments() {
     const { data, error } = await supabase
@@ -21,207 +37,207 @@ export default function SubjectCard({ subject, session }) {
       .eq('subject_id', subject.id)
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
-
-    if (error) {
-      alert(error.message)
-      return
-    }
-
+    if (error) { alert(error.message); return }
     setAssessments(data)
   }
 
   async function deleteAssessment(id) {
-    const confirmDelete = confirm('Delete this assessment?')
-    if (!confirmDelete) return
-
-    const { error } = await supabase
-      .from('assessments')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', session.user.id)
-
-    if (error) {
-      alert(error.message)
-      return
-    }
-
+    if (!confirm('Delete this assessment?')) return
+    const { error } = await supabase.from('assessments').delete().eq('id', id).eq('user_id', session.user.id)
+    if (error) { alert(error.message); return }
     fetchAssessments()
   }
 
-  useEffect(() => {
-    fetchAssessments()
-  }, [subject.id])
+  async function deleteSubject() {
+    if (!confirm(`Delete "${subject.name}" and all its assessments?`)) return
+    await supabase.from('assessments').delete().eq('subject_id', subject.id)
+    const { error } = await supabase.from('subjects').delete().eq('id', subject.id)
+    if (error) { alert(error.message); return }
+    if (onDeleted) onDeleted()
+  }
 
-  const totalWeight = assessments.reduce(
-    (sum, item) => sum + Number(item.weight),
-    0
-  )
+  useEffect(() => { fetchAssessments() }, [subject.id])
 
-  const currentYearMark = assessments.reduce((sum, item) => {
-    const percentage =
-      (Number(item.mark_obtained) / Number(item.total_mark)) * 100
+  const totalWeight = assessments.reduce((sum, i) => sum + Number(i.weight), 0)
 
-    const contribution =
-      (percentage * Number(item.weight)) / 100
-
-    return sum + contribution
+  const currentYearMark = assessments.reduce((sum, i) => {
+    const pct = (Number(i.mark_obtained) / Number(i.total_mark)) * 100
+    return sum + (pct * Number(i.weight)) / 100
   }, 0)
 
-  const predictedFinal =
-    totalWeight > 0 ? (currentYearMark / totalWeight) * 100 : 0
-
-  // ✅ SMART PREDICTION (correct place)
-  const targetMark = 50
+  const predictedFinal = totalWeight > 0 ? (currentYearMark / totalWeight) * 100 : 0
   const remainingWeight = 100 - totalWeight
+  const markNeeded = remainingWeight > 0 ? ((50 - currentYearMark) / remainingWeight) * 100 : 0
 
-  const markNeeded =
-    remainingWeight > 0
-      ? ((targetMark - currentYearMark) / remainingWeight) * 100
-      : 0
-
-  const chartData = assessments.map((item) => {
-    const percentage =
-      (Number(item.mark_obtained) / Number(item.total_mark)) * 100
-
-    const contribution =
-      (percentage * Number(item.weight)) / 100
-
-    return {
-      name: item.title,
-      contribution: Number(contribution.toFixed(2)),
-    }
+  const chartData = assessments.map((i) => {
+    const pct = (Number(i.mark_obtained) / Number(i.total_mark)) * 100
+    return { name: i.title, percentage: Number(pct.toFixed(1)) }
   })
+
+  const predictedClass = getGradeClass(predictedFinal)
 
   return (
     <div className="subject-card">
+      {/* Header */}
       <div className="subject-header">
-        <div>
-          <h3>📘 {subject.name}</h3>
-          <p className="muted-text">
-            Monitor your progress and predict your final grade
-          </p>
+        <div className="subject-header-left">
+          <div className="subject-icon">📘</div>
+          <div>
+            <h3>{subject.name}</h3>
+            <p className="muted-text">
+              {assessments.length === 0
+                ? 'No assessments yet'
+                : `${assessments.length} assessment${assessments.length !== 1 ? 's' : ''} · ${totalWeight}% weight logged`}
+            </p>
+          </div>
         </div>
-
-        <span className="weight-badge">
-          {totalWeight}% completed
-        </span>
-      </div>
-
-      <AddAssessment
-        subject={subject}
-        session={session}
-        onAssessmentAdded={fetchAssessments}
-      />
-
-      <div className="progress-wrapper">
-        <div className="progress-label">
-          <span>Year Weight Progress</span>
-          <span>{totalWeight}% / 100%</span>
-        </div>
-
-        <div className="progress-bar">
-          <div
-            className="progress-fill"
-            style={{ width: `${Math.min(totalWeight, 100)}%` }}
-          ></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="weight-badge">{totalWeight}% logged</span>
+          <button
+            className="btn-ghost btn-sm"
+            onClick={() => setCollapsed(!collapsed)}
+            style={{ padding: '6px 10px' }}
+          >
+            {collapsed ? '↓' : '↑'}
+          </button>
         </div>
       </div>
 
-      <h4>📊 Assessments</h4>
-
-      {assessments.length === 0 ? (
-        <p className="muted-text">No assessments added yet.</p>
-      ) : (
+      {!collapsed && (
         <>
-          <div className="assessment-grid">
-            {assessments.map((item) => {
-              const percentage =
-                (Number(item.mark_obtained) / Number(item.total_mark)) * 100
+          {/* Add Assessment */}
+          <AddAssessment subject={subject} session={session} onAssessmentAdded={fetchAssessments} />
 
-              const contribution =
-                (percentage * Number(item.weight)) / 100
-
-              return (
-                <div className="assessment-card" key={item.id}>
-                  <div className="assessment-top">
-                    <strong>{item.title}</strong>
-                    <span>{item.weight}%</span>
-                  </div>
-
-                  <p>Mark: {item.mark_obtained}/{item.total_mark}</p>
-                  <p>Percentage: {percentage.toFixed(2)}%</p>
-                  <p>Contribution: {contribution.toFixed(2)}%</p>
-
-                  <button
-                    className="danger-btn"
-                    onClick={() => deleteAssessment(item.id)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              )
-            })}
+          {/* Progress */}
+          <div className="progress-wrapper">
+            <div className="progress-label">
+              <span>Year weight progress</span>
+              <span>{totalWeight}% / 100%</span>
+            </div>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${Math.min(totalWeight, 100)}%` }} />
+            </div>
           </div>
 
-          <div className="chart-box">
-            <h4>📊 Performance Breakdown</h4>
+          {/* Assessments */}
+          <h4>Assessments</h4>
 
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="name" stroke="#374151" />
-                <YAxis stroke="#374151" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#ffffff',
-                    border: '1px solid #d1d5db',
-                    borderRadius: '10px',
-                    color: '#111827'
-                  }}
-                  labelStyle={{ color: '#111827' }}
-                  itemStyle={{ color: '#111827' }}
-                />
-                <Bar
-                  dataKey="contribution"
-                  fill="#2563eb"
-                  radius={[8, 8, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
+          {assessments.length === 0 ? (
+            <div className="empty-state" style={{ padding: '20px 0' }}>
+              <div>Add your first assessment above.</div>
+            </div>
+          ) : (
+            <>
+              <div className="assessment-grid">
+                {assessments.map((item) => {
+                  const pct = (Number(item.mark_obtained) / Number(item.total_mark)) * 100
+                  const contribution = (pct * Number(item.weight)) / 100
+                  const cls = getGradeClass(pct)
+
+                  return (
+                    <div className="assessment-card" key={item.id}>
+                      <div className="assessment-top">
+                        <strong>{item.title}</strong>
+                        <span>{item.weight}%</span>
+                      </div>
+
+                      <div className="pct-row">
+                        <span className={`pct-badge ${cls}`}>{pct.toFixed(1)}%</span>
+                        <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+                          {getGradeLetter(pct)}
+                        </span>
+                      </div>
+
+                      <p style={{ marginTop: 8 }}>
+                        <strong>{item.mark_obtained}</strong> / {item.total_mark}
+                      </p>
+                      <p>Contribution: <strong>{contribution.toFixed(2)}%</strong></p>
+
+                      <button className="danger-btn" onClick={() => deleteAssessment(item.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Chart */}
+              <div className="chart-box">
+                <h4>Performance breakdown</h4>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={chartData} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e8e5de" vertical={false} />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fontSize: 12, fill: '#6b6760' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      domain={[0, 100]}
+                      tick={{ fontSize: 11, fill: '#a09d97' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: '#fff',
+                        border: '1px solid #e8e5de',
+                        borderRadius: 10,
+                        fontSize: 13,
+                        color: '#1a1916',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.07)',
+                      }}
+                      formatter={(val) => [`${val}%`, 'Score']}
+                    />
+                    <Bar dataKey="percentage" radius={[6, 6, 0, 0]}>
+                      {chartData.map((entry, i) => (
+                        <Cell
+                          key={i}
+                          fill={BAR_COLORS[getGradeClass(entry.percentage)]}
+                          fillOpacity={0.85}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+
+          {/* Summary */}
+          <div className="summary-grid">
+            <div className="summary-card">
+              <span>Completed weight</span>
+              <strong>{totalWeight}%</strong>
+            </div>
+            <div className="summary-card">
+              <span>Current year mark</span>
+              <strong>{currentYearMark.toFixed(1)}%</strong>
+            </div>
+            <div className={`summary-card status-${predictedClass}`}>
+              <span>Predicted final</span>
+              <strong>{predictedFinal.toFixed(1)}%</strong>
+            </div>
+            <div className="summary-card">
+              <span>Remaining weight</span>
+              <strong>{remainingWeight}%</strong>
+            </div>
+            <div className={`summary-card ${markNeeded > 100 ? 'status-fail' : markNeeded > 70 ? 'status-warn' : 'status-pass'}`}>
+              <span>Needed to pass</span>
+              <strong>
+                {remainingWeight > 0 ? `${markNeeded.toFixed(1)}%` : '—'}
+              </strong>
+            </div>
           </div>
+
+          {/* Delete subject */}
+          <div className="divider" />
+          <button className="danger-btn btn-sm" onClick={deleteSubject} style={{ width: 'auto' }}>
+            Delete subject
+          </button>
         </>
       )}
-
-      <div className="summary-grid">
-        <div className="summary-card">
-          <span>Completed Weight</span>
-          <strong>{totalWeight}%</strong>
-        </div>
-
-        <div className="summary-card">
-          <span>Current Year Mark</span>
-          <strong>{currentYearMark.toFixed(2)}%</strong>
-        </div>
-
-        <div className="summary-card">
-          <span>Predicted Final</span>
-          <strong>{predictedFinal.toFixed(2)}%</strong>
-        </div>
-
-        <div className="summary-card">
-          <span>Remaining Weight</span>
-          <strong>{remainingWeight}%</strong>
-        </div>
-
-        <div className="summary-card">
-          <span>Needed to Pass 50%</span>
-          <strong>
-            {remainingWeight > 0
-              ? `${markNeeded.toFixed(2)}%`
-              : 'Completed'}
-          </strong>
-        </div>
-      </div>
     </div>
   )
 }
